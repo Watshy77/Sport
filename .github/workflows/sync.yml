@@ -38,6 +38,7 @@ jobs:
           GARMIN_TOKENS: ${{ secrets.GARMIN_TOKENS }}
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          CALENDAR_URL: ${{ secrets.CALENDAR_URL }}
         run: python sync/garmin_sync.py
 
       - name: Enregistrer les données chiffrées
