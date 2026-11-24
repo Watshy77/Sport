@@ -189,7 +189,7 @@ const dshort=ms=>{const d=new Date(ms);return d.getDate()+' '+MO[d.getMonth()]};
 const parsePace=t=>{const m=String(t).trim().match(/^(\d{1,2})[:'h](\d{1,2})/);return m?(+m[1])*60+(+m[2]):null};
 
 /* ============ état ============ */
-function defProfile(){return{sex:'m',age:35,hrMax:186,hrRest:52,ftp:230,thrPace:285,level:'inter',goal:'semi',goalDate:dk(addDays(Date.now(),70)),days:[1,3,5,6],hours:6,runShare:60}}
+function defProfile(){return{sex:'m',age:35,hrMax:186,hrRest:52,ftp:230,thrPace:285,level:'inter',goal:'semi',goalDate:dk(addDays(Date.now(),70)),days:[1,3,5,6],hours:6,runShare:60,sessions:4,useCal:true,winStart:'06:30',winEnd:'21:30',buffer:30,allDay:'busy'}}
 let S=null;
 function loadState(){try{const j=localStorage.getItem(KEY);if(j)return JSON.parse(j)}catch(e){}return null}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('Stockage indisponible : pense à exporter une sauvegarde (Profil).')}}
@@ -224,7 +224,27 @@ const LONGMAX={run:{none:105,'10k':90,semi:120,marathon:165,cyclo:80},bike:{none
 const MAXD={run:{easy:70,recup:40,seuil:75,vma:70,activ:35},bike:{easy:120,recup:50,sst:95,vo2:85,activ:50}};
 const GOALS={none:'Sans objectif','10k':'10 km',semi:'Semi-marathon',marathon:'Marathon',cyclo:'Cyclosportive'};
 const avail=p=>(p.days&&p.days.length?p.days:[1,3,5,6]).slice().sort((a,b)=>a-b);
-function clampDur(d,m,p){const mx=d.type==='long'?LONGMAX[d.sport][p.goal]:(MAXD[d.sport][d.type]||90);const mn=(d.type==='recup'||d.type==='activ')?20:d.type==='long'?(d.sport==='bike'?60:45):30;return Math.round(clamp(m,mn,mx)/5)*5}
+function clampDur(d,m,p){let mx=d.type==='long'?LONGMAX[d.sport][p.goal]:(MAXD[d.sport][d.type]||90);let mn=(d.type==='recup'||d.type==='activ')?20:d.type==='long'?(d.sport==='bike'?60:45):30;if(d.max!=null){mx=Math.min(mx,d.max);mn=Math.min(mn,mx)}return Math.max(15,Math.floor(clamp(m,mn,mx)/5)*5)}
+/* ---- calendrier de travail ---- */
+const hm2m=s=>{const m=String(s||'').match(/(\d{1,2})[:h](\d{2})/);return m?(+m[1])*60+(+m[2]):null};
+const m2h=m=>Math.floor(m/60)+'h'+String(Math.round(m%60)).padStart(2,'0');
+function dayFree(date,p){const C=S&&S.cal;if(!C||!C.days||p.useCal===false)return null;const k=dk(date);if(k<C.from||k>C.to)return null;
+  const ws=hm2m(p.winStart)??390,we=hm2m(p.winEnd)??1290,buf=+p.buffer||0,raw=C.days[k]||[],prev=C.days[dk(addDays(date,-1))]||[];
+  const ev=raw.filter(x=>!(x[3]&&p.allDay==='ignore'));const bl=[];
+  for(const [a,b,,ad] of ev)bl.push(ad?[0,1440]:[a-buf,b+buf]);
+  const night=ev.filter(x=>!x[3]&&x[0]===0&&x[1]>240&&x[1]<=720&&prev.some(y=>!y[3]&&y[1]===1440)).map(x=>x[1]);
+  if(night.length)bl.push([0,Math.max(...night)+360]);
+  bl.sort((a,b)=>a[0]-b[0]);let cur=ws,best=[0,ws,ws];
+  for(const [a,b] of bl){const e=Math.min(a,we);if(e-cur>best[0])best=[e-cur,cur,e];cur=Math.max(cur,b);if(cur>=we)break}
+  if(we-cur>best[0])best=[we-cur,cur,we];
+  return{gap:Math.max(0,best[0]),slot:[best[1],best[2]],events:ev.filter(x=>!(x[0]===0&&x[1]===1440&&!x[3]&&false)),night:night.length>0}}
+function planDays(mon,p){const info=Array.from({length:7},(_,i)=>dayFree(addDays(mon,i),p));
+  if(info.every(x=>x==null))return{av:avail(p),info};
+  const pd=avail(p),N=clamp(+p.sessions||pd.length,1,7);
+  const cand=[];for(let i=0;i<7;i++){const f=info[i];if(f==null){if(pd.includes(i))cand.push([i,600])}else if(f.gap>=40)cand.push([i,Math.min(f.gap,600)])}
+  cand.sort((a,b)=>(b[1]+(b[0]>=5?60:0))-(a[1]+(a[0]>=5?60:0))||b[0]-a[0]);
+  return{av:cand.slice(0,N).map(c=>c[0]).sort((a,b)=>a-b),info}}
+const evTxt=f=>f&&f.events&&f.events.length?f.events.map(e=>e[3]?esc(e[2])+' (journée)':esc(e[2])+' '+m2h(e[0])+'–'+m2h(e[1]===1440?1440:e[1]).replace('24h00','24h')).join(', '):'';
 function riegel(p,D){const d1=3600/p.thrPace*1000;return 3600*Math.pow(D/d1,1.06)}
 const GOALD={'10k':10000,semi:21097,marathon:42195};
 function weekInfo(mon,p){
@@ -236,13 +256,13 @@ function weekInfo(mon,p){
   }
   return Math.floor(mon/(7*DAY))%4===3?{kind:'rec',f:.7,label:'Semaine allégée pour assimiler'}:{kind:'build',f:1,label:'Semaine de développement'};
 }
-function skeleton(mon,p,wi){
-  const av=avail(p),share=p.runShare/100;
-  const days=Array.from({length:7},(_,i)=>({i,date:addDays(mon,i),sport:null,type:'rest'}));
+function skeleton(mon,p,wi,pl){
+  pl=pl||planDays(mon,p);const av=pl.av,share=p.runShare/100,gapOf=i=>pl.info[i]?pl.info[i].gap:1440;
+  const days=Array.from({length:7},(_,i)=>{const f=pl.info[i];return{i,date:addDays(mon,i),sport:null,type:'rest',max:f?f.gap-15:null,free:f}});
   const both=share>0&&share<1,main=share>=.5?'run':'bike';
-  const we=av.filter(i=>i>=5);
-  if(both&&we.length===2){days[5].sport='bike';days[5].type='long';days[6].sport='run';days[6].type='long'}
-  else{const ld=we.length?we[we.length-1]:av[av.length-1];if(ld!=null){days[ld].sport=main;days[ld].type='long'}}
+  const ls=av.filter(i=>gapOf(i)>=90).sort((a,b)=>(Math.min(gapOf(b),480)+(b>=5?120:0))-(Math.min(gapOf(a),480)+(a>=5?120:0))||b-a);
+  if(both&&ls.length>=2&&av.length>=4){const [x,y]=ls.slice(0,2).sort((a,b)=>a-b);const bx=gapOf(x)>=gapOf(y)?x:y,rx=bx===x?y:x;days[bx].sport='bike';days[bx].type='long';days[rx].sport='run';days[rx].type='long'}
+  else{const ld=ls.length?ls[0]:av[av.length-1];if(ld!=null){days[ld].sport=main;days[ld].type='long'}}
   const rest=av.filter(i=>days[i].type!=='long');
   let tRun=both?Math.max(1,Math.round(av.length*share)):share>=1?av.length:0;
   let nRun=days.filter(d=>d.sport==='run').length,nBike=days.filter(d=>d.sport==='bike').length,prev=null;
@@ -258,9 +278,9 @@ function skeleton(mon,p,wi){
   let H=p.level==='deb'?1:p.level==='conf'?(av.length>=5?3:2):(av.length>=4?2:1);
   if(wi.kind==='rec')H=av.length>=4?1:0;if(wi.kind==='taper')H=1;
   const pref=[4,0,2,1,3,5,6];
-  const cand=rest.slice().sort((a,b)=>pref[a]-pref[b]);
+  const cand=rest.filter(i=>gapOf(i)>=60).sort((a,b)=>pref[a]-pref[b]);
   const hc=[];
-  for(const pass of [0,1])for(const i of cand){if(hc.length>=H||hc.includes(i))continue;if(hc.some(h=>Math.abs(h-i)<=1))continue;if(pass===0&&days[i+1]&&days[i+1].type==='long')continue;hc.push(i)}
+  for(const pass of [0,1])for(const i of cand){if(hc.length>=H||hc.includes(i))continue;if(hc.some(h=>Math.abs(h-i)<=1))continue;if(days[i+1]&&days[i+1].type==='long'&&(pass===0||hc.length))continue;hc.push(i)}
   hc.sort((a,b)=>a-b);let rh=0,bh=0;
   for(const i of hc){const d=days[i];
     if(d.sport==='run'){d.type=(p.goal==='10k'||p.goal==='none')?(rh%2?'seuil':'vma'):(rh%2?'vma':'seuil');rh++}
@@ -297,10 +317,10 @@ function weekPlan(mon,ser,p,proj){
   let ctl=proj!=null?proj:(atMon?atMon.ctl:(last?last.ctl:0));
   if(ser.length<42)ctl=Math.max(ctl,{deb:22,inter:35,conf:50}[p.level]||35);
   const ramp={deb:2,inter:3.5,conf:5}[p.level]||3.5;
-  const av=avail(p);
+  const pl=planDays(mon,p),av=pl.av;
   let T=wi.kind==='build'?7*(ctl+ramp/0.155):7*ctl*wi.f;
   T=Math.max(T,av.length*30*(wi.kind==='build'?1:wi.f));
-  const days=skeleton(mon,p,wi);
+  const days=skeleton(mon,p,wi,pl);
   let raceT=0;
   days.forEach(d=>{if(d.type==='race'){d.dur=d.sport==='run'?Math.round(riegel(p,GOALD[p.goal]||10000)/60):240;raceT+=d.dur/60*RATE[d.sport].race}});
   const sc=days.filter(d=>d.type!=='rest'&&d.type!=='race');
@@ -317,7 +337,7 @@ function weekPlan(mon,ser,p,proj){
     const missed=past.filter(d=>HARD.has(d.type)&&!d.acts.length);
     if(missed.length){const m=missed[missed.length-1];
       const t=days.find(d=>isFut(d)&&d.type==='easy'&&d.sport===m.sport&&!days.some(o=>o!==d&&isFut(o)&&HARD.has(o.type)&&Math.abs(o.i-d.i)<=1)&&!(days[d.i+1]&&days[d.i+1].type==='long'));
-      if(t){t.type=m.type;t.dur=m.dur;t.moved=true;notes.push('Séance « '+NAMES[m.sport][m.type]+' » manquée '+DNL[m.i]+' : reportée '+DNL[t.i]+'.')}}
+      if(t){t.type=m.type;t.dur=clampDur(t,m.dur,p);t.moved=true;notes.push('Séance « '+NAMES[m.sport][m.type]+' » manquée '+DNL[m.i]+' : reportée '+DNL[t.i]+'.')}}
     const fut=days.filter(d=>isFut(d)&&d.type!=='rest'&&d.type!=='race');
     const pf=fut.reduce((s,d)=>s+d.dur/60*RATE[d.sport][d.type],0);
     if(past.some(d=>d.type!=='rest'||d.acts.length)&&pf>0){const f=clamp((T-doneL-raceT)/pf,.6,1.25);
@@ -331,6 +351,7 @@ function weekPlan(mon,ser,p,proj){
       else if(tsb>10&&HARD.has(td.type))notes.push('Tu es frais (forme +'+Math.round(tsb)+') : bon jour pour réussir cette séance clé.');
     }
   }
+  days.forEach(d=>{if(HARD.has(d.type)&&d.max!=null&&d.max<45){d.type='easy';d.dur=clampDur(d,d.dur,p)}});
   days.forEach(d=>{if(d.type!=='rest'){const r=stepsOf(d,p,wi);d.steps=r.steps;d.dur=r.dur;d.tss=d.dur/60*RATE[d.sport][d.type]}else d.tss=0});
   return{wi,T,days,notes,ctl};
 }
@@ -494,7 +515,7 @@ async function syncGarmin(manual){
     if(S.sample){S.acts=[];S.sample=false}
     const r=merge(sums);let n=0,fail=0;
     for(const f of files){try{const fr=await fetch(base+'a/'+f);if(!fr.ok)throw 0;const out=[];await parseAny('a.zip',await decBuf(key,await fr.arrayBuffer()),out);merge(out);sy.done[f]=1;n++;if(n%10===0)toast('Fichiers détaillés : '+n+'/'+files.length)}catch(e){fail++}}
-    S.well=Object.assign(S.well||{},man.well||{});applyWell();sy.last=man.updated||Date.now();sy.err='';save();route();
+    S.well=Object.assign(S.well||{},man.well||{});S.cal=man.cal||null;applyWell();sy.last=man.updated||Date.now();sy.err='';save();route();
     if(manual||r.added||n)toast(`Garmin : ${r.added} nouvelle${r.added>1?'s':''} activité${r.added>1?'s':''}, ${n} fichier${n>1?'s':''} détaillé${n>1?'s':''}${fail?', '+fail+' en échec':''}.`)}
   catch(e){sy.err=String(e.message||e);save();if(manual)toast('Synchro impossible : '+sy.err);else if(/phrase/.test(sy.err))toast('Synchro Garmin : '+sy.err)}
   finally{syncing=false}}
@@ -533,16 +554,18 @@ function viewCoach(){
   const doneW=W1.days.reduce((s,d)=>s+d.doneL,0);
   let card;
   if(td.acts.length){const a=td.acts[0];card=`<section class="card today ${a.sport==='bike'?'bike':''}">${lanes()}<div class="kick">${esc(cap(new Intl.DateTimeFormat('fr-FR',{weekday:'long',day:'numeric',month:'long'}).format(today)))} · séance faite</div><h1>Bien joué !</h1><div class="meta">${td.acts.map(a=>`<span>${esc(a.title||NAMES[a.sport]?.easy||'Activité')} : ${actLine(a,p)}</span>`).join('')}</div><div class="why"><p>${td.type!=='rest'?'Prévu : '+esc(NAMES[td.sport][td.type])+' ('+td.dur+' min).':'Jour de repos prévu, séance bonus.'}</p><p>Récupère bien : hydratation, sommeil. Prochaine séance : ${nextTxt(W1,W2,today)}.</p></div></section>`}
-  else if(td.type==='rest'){card=`<section class="card today rest">${lanes()}<div class="kick">${esc(cap(new Intl.DateTimeFormat('fr-FR',{weekday:'long',day:'numeric',month:'long'}).format(today)))}</div><h1>Repos</h1><div class="big num">0′</div><div class="why"><p>Le repos fait partie de l'entraînement : c'est pendant la récupération que ton corps s'adapte.</p><p>Option : 20 min de marche ou de mobilité. Prochaine séance : ${nextTxt(W1,W2,today)}.</p></div></section>`}
+  else if(td.type==='rest'){card=`<section class="card today rest">${lanes()}<div class="kick">${esc(cap(new Intl.DateTimeFormat('fr-FR',{weekday:'long',day:'numeric',month:'long'}).format(today)))}</div><h1>Repos</h1><div class="big num">0′</div>${td.free&&td.free.events.length?`<div class="meta"><span>Agenda : ${evTxt(td.free)}</span></div>`:''}<div class="why"><p>Le repos fait partie de l'entraînement : c'est pendant la récupération que ton corps s'adapte.</p><p>Option : 20 min de marche ou de mobilité. Prochaine séance : ${nextTxt(W1,W2,today)}.</p></div></section>`}
   else{card=`<section class="card today ${td.sport==='bike'?'bike':''}">${lanes()}<div class="kick">${esc(cap(new Intl.DateTimeFormat('fr-FR',{weekday:'long',day:'numeric',month:'long'}).format(today)))} · ${td.sport==='run'?'Course à pied':'Vélo'}</div>
     <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap"><h1>${esc(NAMES[td.sport][td.type])}</h1><div class="big num">${hm(td.dur*60).replace(' min','′')}</div></div>
+    ${td.free?`<div class="meta"><span>Créneau conseillé : ${m2h(td.free.slot[0])} – ${m2h(td.free.slot[1])}</span>${td.free.events.length?`<span>Agenda : ${evTxt(td.free)}</span>`:''}</div>`:''}
     ${stepsHTML(td)}
     <div class="why"><p><b>Pourquoi :</b> ${esc(W1.wi.label)}${W1.wi.w>0&&p.goal!=='none'?' · '+esc(GOALS[p.goal])+' dans '+W1.wi.w+' semaines':''}. ${esc(purpose(td))}</p>${W1.notes.map(n=>`<p>${esc(n)}</p>`).join('')}</div></section>`}
   const pct=Math.min(100,doneW/W1.T*100);
   const weekRows=W1.days.map(d=>{const isT=d.date===today,past=d.date<today;
     let chip='';if(d.acts.length)chip='<span class="chip ok">Fait</span>';else if(d.type==='rest')chip='<span class="chip">Repos</span>';else if(past)chip='<span class="chip miss">Manqué</span>';else chip='<span class="chip plan">'+d.dur+' min</span>';
     const title=d.type==='rest'?(d.acts.length?'Séance bonus':'Repos'):esc(NAMES[d.sport][d.type])+(d.moved?' (reportée)':'');
-    const sub=d.acts.length?d.acts.map(a=>actLine(a,p)).join(' + '):d.type==='rest'?'':(d.sport==='run'?'Course':'Vélo')+' · charge ≈ '+Math.round(d.tss);
+    const ag=d.free&&d.free.events.length?'Agenda : '+d.free.events.map(e=>e[3]?e[2]+' (journée)':e[2]+' '+m2h(e[0])+'–'+m2h(e[1])).join(', '):'';
+    const sub=d.acts.length?d.acts.map(a=>actLine(a,p)).join(' + '):d.type==='rest'?ag:(d.sport==='run'?'Course':'Vélo')+(d.free?' · créneau '+m2h(d.free.slot[0])+'–'+m2h(d.free.slot[1]):' · charge ≈ '+Math.round(d.tss))+(ag?' · '+ag:'');
     const head=`<span class="dn">${DN[d.i]}<small>${dshort(d.date)}</small></span><span class="ti">${d.type!=='rest'?`<span class="dot" style="background:${col(d.sport)}"></span>`:''}${title}<small>${esc(sub)}</small></span>${chip}`;
     return d.type!=='rest'&&!past&&!isT?`<details class="day"><summary>${head}</summary><div class="det">${d.steps.map(s=>`<div><b>${s.m}′</b> ${esc(s.txt)}${s.tg?' · <span class="muted">'+esc(s.tg)+'</span>':''}</div>`).join('')}</div></details>`:`<div class="day${isT?' now':''}">${head}</div>`}).join('');
   const nxt=W2.days.filter(d=>d.type!=='rest').map(d=>`<div class="row" style="grid-template-columns:3em minmax(0,1fr) auto"><span class="muted">${DN[d.i]}</span><span><span class="dot" style="background:${col(d.sport)}"></span>${esc(NAMES[d.sport][d.type])}</span><span class="r">${d.dur} min</span></div>`).join('');
@@ -655,9 +678,17 @@ function viewProfil(){const p=S.profile,e=estimate();
    <label class="l">Date de l'objectif<input type="date" id="p-goalDate" value="${esc(p.goalDate||'')}"></label>
    <label class="l">Heures max par semaine<input type="number" id="p-hours" inputmode="decimal" step="0.5" min="1" value="${p.hours}"></label>
    <label class="l">Part course / vélo : <span id="sh-v">${p.runShare} % course</span><input type="range" id="p-share" min="0" max="100" step="10" value="${p.runShare}"></label>
-   <div class="l" style="grid-column:1/-1">Jours d'entraînement<div class="daysel">${DN.map((d,i)=>`<label><input type="checkbox" id="p-d${i}"${p.days.includes(i)?' checked':''}>${d}</label>`).join('')}</div></div>
+   <div class="l" style="grid-column:1/-1">${S.cal?'Jours par défaut (hors période couverte par le calendrier)':'Jours d\'entraînement'}<div class="daysel">${DN.map((d,i)=>`<label><input type="checkbox" id="p-d${i}"${p.days.includes(i)?' checked':''}>${d}</label>`).join('')}</div></div>
   </form>
   ${Object.keys(e).length?`<div class="panel" style="margin-top:20px"><h3>D'après tes activités</h3><p>${e.thrPace?'Allure seuil ≈ <b>'+pace(e.thrPace)+' /km</b>. ':''}${e.ftp?'FTP ≈ <b>'+e.ftp+' W</b>. ':''}${e.hrMax?'FC max observée <b>'+e.hrMax+' bpm</b>. ':''}</p><button class="btn" type="button" id="apply-est">Utiliser ces valeurs</button></div>`:''}
+  <div class="panel" style="margin-top:20px"><h3>Calendrier de travail</h3>${S.cal?`<p class="small muted">Calendrier chargé du ${esc(dshort(new Date(S.cal.from+'T12:00').getTime()))} au ${esc(dshort(new Date(S.cal.to+'T12:00').getTime()))} : ${Object.keys(S.cal.days||{}).length} jours avec des événements. Le coach place tes séances dans tes créneaux libres et adapte leur durée.</p>
+   <form class="f" id="cf"><label class="l" style="grid-column:1/-1;display:flex;align-items:center;gap:10px"><input type="checkbox" id="c-use"${p.useCal!==false?' checked':''}>Planifier selon mon calendrier</label>
+   <label class="l">Séances par semaine<select id="c-ses">${[2,3,4,5,6,7].map(n=>o(n,n+' séances',+p.sessions||4)).join('')}</select></label>
+   <label class="l">Disponible à partir de<input type="time" id="c-ws" value="${esc(p.winStart)}"></label>
+   <label class="l">Jusqu'à<input type="time" id="c-we" value="${esc(p.winEnd)}"></label>
+   <label class="l">Marge avant et après le travail (min) <small>trajet, repas</small><input type="number" id="c-buf" inputmode="numeric" min="0" max="180" step="5" value="${+p.buffer||0}"></label>
+   <label class="l">Événements « journée entière »<select id="c-ad">${o('busy','Journée bloquée',p.allDay)}${o('ignore','Ignorés',p.allDay)}</select></label></form>
+   <p class="small muted" style="margin-top:10px">Après une nuit de travail, aucune séance n'est proposée dans les 6 h qui suivent.</p>`:`<p class="small muted" style="margin:0">Ajoute le secret <b>CALENDAR_URL</b> (ton lien webcal://) dans ton dépôt GitHub : à la synchro suivante, le coach placera tes séances les jours et aux heures où tu ne travailles pas.</p>`}</div>
   <div class="panel" style="margin-top:20px"><h3>Synchronisation Garmin</h3><p class="small muted">Tes données sont récupérées toutes les 3 h par ton dépôt GitHub, chiffrées avec ta phrase secrète. Saisis ici la même phrase que le secret <b>SYNC_PASSPHRASE</b>. Elle reste sur ce téléphone.</p>
    <form class="f" id="syf"><label class="l">Phrase secrète<input type="password" id="sy-pass" autocomplete="current-password" value="${esc(S.sync&&S.sync.pass||'')}"></label><label class="l">Dossier des données <small>laisse « data/ » sur GitHub Pages</small><input type="text" id="sy-url" value="${esc(S.sync&&S.sync.url||'data/')}"></label></form>
    <p class="small" style="margin-top:10px">${S.sync&&S.sync.last?'Dernières données Garmin : '+esc(new Date(S.sync.last).toLocaleString('fr-FR',{dateStyle:'medium',timeStyle:'short'})):'Pas encore synchronisé.'}${S.sync&&S.sync.err?' <span style="color:var(--run)">Erreur : '+esc(S.sync.err)+'</span>':''}</p>
@@ -682,6 +713,7 @@ async function handleFiles(files){if(!files||!files.length)return;let n=0;toast(
   const r=merge(out);save();route();
   toast(`${r.added} activité${r.added>1?'s':''} ajoutée${r.added>1?'s':''}${r.upd?', '+r.upd+' complétée'+(r.upd>1?'s':''):''}${r.dup?', '+r.dup+' doublon'+(r.dup>1?'s':''):''}${fail?', '+fail+' fichier(s) illisible(s)':''}.`)}
 
+function readCal(){const g=id=>document.getElementById(id),p=S.profile;if(!g('c-use'))return;p.useCal=g('c-use').checked;p.sessions=+g('c-ses').value;p.winStart=g('c-ws').value||'06:30';p.winEnd=g('c-we').value||'21:30';p.buffer=clamp(+g('c-buf').value||0,0,180);p.allDay=g('c-ad').value;save()}
 function readSync(){const p=document.getElementById('sy-pass'),u=document.getElementById('sy-url');if(!p)return;S.sync=Object.assign(S.sync||{},{pass:p.value,url:u.value.trim()||'data/'});save()}
 function readProfile(){const p=S.profile,g=id=>document.getElementById(id);if(!g('p-hrMax'))return;
   p.sex=g('p-sex').value;p.hrMax=clamp(+g('p-hrMax').value||p.hrMax,120,230);p.hrRest=clamp(+g('p-hrRest').value||p.hrRest,30,100);
@@ -714,8 +746,8 @@ function boot(){
     else if(id==='wipe-y'){S={profile:defProfile(),acts:[],sample:false};save();route();toast('Tout est effacé.')}});
   fi.addEventListener('change',()=>{handleFiles([...fi.files]);fi.value=''});
   $('#bk-file').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;try{const j=JSON.parse(await f.text());if(!j.profile||!Array.isArray(j.acts))throw 0;S=j;save();route();toast('Sauvegarde restaurée : '+S.acts.length+' activités.')}catch(err){toast('Ce fichier n\'est pas une sauvegarde Allure.')}e.target.value=''});
-  document.addEventListener('input',e=>{if(e.target.closest('#pf'))readProfile();if(e.target.closest('#syf'))readSync()});
-  document.addEventListener('change',e=>{if(e.target.closest('#pf'))readProfile()});
+  document.addEventListener('input',e=>{if(e.target.closest('#pf'))readProfile();if(e.target.closest('#syf'))readSync();if(e.target.closest('#cf'))readCal()});
+  document.addEventListener('change',e=>{if(e.target.closest('#pf'))readProfile();if(e.target.closest('#cf'))readCal()});
   document.addEventListener('submit',e=>{if(e.target.id!=='man')return;e.preventDefault();const g=id=>document.getElementById(id);const d=new Date(g('m-d').value+'T12:00').getTime(),t=+g('m-t').value*60,k=+g('m-k').value,h=+g('m-h').value;
     if(!d||!t){toast('Indique au moins la date et la durée.');return}const a=build({sport:g('m-s').value,start:d,dur:t,dist:k?k*1000:null,avgHr:h||null,src:'manuel',title:'Saisie manuelle'},[]);if(S.sample){S.acts=[];S.sample=false}merge([a]);save();route();toast('Séance ajoutée.')});
   document.addEventListener('dragover',e=>{const d=$('#drop');if(d){e.preventDefault();d.classList.add('over')}});
@@ -728,7 +760,7 @@ function boot(){
   try{if('serviceWorker' in navigator&&/github\.io$|localhost|127\.0\.0\.1/.test(location.hostname))navigator.serviceWorker.register('sw.js')}catch(e){}
 }
 if(typeof window!=='undefined'&&window.document&&!window.__TEST__)boot();
-if(typeof globalThis!=='undefined')globalThis.__allure={parseFIT,parseCSV,weekPlan,series,sampleActs,defProfile,monday,startDay,addDays,loadOf,merge,build,setS:s=>{S=s},getS:()=>S,stepsOf,bests,estimate,syncGarmin,wellToday};
+if(typeof globalThis!=='undefined')globalThis.__allure={parseFIT,parseCSV,weekPlan,series,sampleActs,defProfile,monday,startDay,addDays,loadOf,merge,build,setS:s=>{S=s},getS:()=>S,stepsOf,bests,estimate,syncGarmin,wellToday,planDays,dayFree};
 }
 </script>
 </body>

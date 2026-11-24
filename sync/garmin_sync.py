@@ -10,6 +10,8 @@ Variables d'environnement :
   SYNC_DAYS         historique d'activités au premier passage (défaut 365)
   WELLNESS_DAYS     historique santé au premier passage (défaut 42)
   MAX_DOWNLOADS     fichiers d'activité téléchargés par passage (défaut 120)
+  CALENDAR_URL      lien webcal:// ou https:// d'un calendrier public (jours de travail), facultatif
+  CAL_TZ            fuseau horaire du calendrier (défaut Europe/Paris)
 """
 import base64
 import datetime as dt
@@ -19,6 +21,8 @@ import os
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -242,6 +246,22 @@ def main(g=None):
         if w:
             man["well"][day] = w
         time.sleep(0.2)
+
+    # calendrier de travail (facultatif)
+    cal_url = os.environ.get("CALENDAR_URL", "").strip()
+    if cal_url:
+        try:
+            from calendar_ics import busy_days, fetch
+
+            tzname = os.environ.get("CAL_TZ", "Europe/Paris")
+            frm, to = today - dt.timedelta(days=7), today + dt.timedelta(days=28)
+            days = busy_days(fetch(cal_url), tzname, frm, to)
+            man["cal"] = {"tz": tzname, "from": frm.isoformat(), "to": to.isoformat(), "days": days}
+            log(f"Calendrier : {sum(len(v) for v in days.values())} créneaux occupés sur {len(days)} jours.")
+        except Exception as e:  # noqa: BLE001
+            log(f"  ! calendrier : {e}")
+    else:
+        man.pop("cal", None)
 
     if mf.exists() and json.dumps({k: v for k, v in man.items() if k != "updated"}, sort_keys=True) == before:
         log("Rien de nouveau.")
